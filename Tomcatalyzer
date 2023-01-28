@@ -1,0 +1,27 @@
+$tomcatLog = Get-Content -Path "path\to\tomcat-server.log"
+$localhostLog = Get-Content -Path "path\to\localhost-access.log"
+
+# Parse response times from the Tomcat log
+$responseTimes = @()
+$tomcatLog | ForEach-Object {
+    if ($_ -match '.* (\d+)ms') {
+        $responseTimes += [int]$Matches[1]
+    }
+}
+
+# Parse response times from the localhost log
+$localhostLog | ForEach-Object {
+    if ($_ -match '.* (\d+)ms') {
+        $responseTimes += [int]$Matches[1]
+    }
+}
+
+# Calculate error rate
+$errorCount = ($tomcatLog + $localhostLog | Where-Object { $_ -match '.* ERROR.*' }).Count
+$errorRate = [Math]::Round(($errorCount / ($responseTimes.Count)), 2)
+
+# Display report
+"Error Rate: $($errorRate * 100)%"
+"Min Response Time: $($responseTimes | Measure-Object -Minimum).Minimum ms"
+"Max Response Time: $($responseTimes | Measure-Object -Maximum).Maximum ms"
+"Average Response Time: $($responseTimes | Measure-Object -Average).Average ms"
