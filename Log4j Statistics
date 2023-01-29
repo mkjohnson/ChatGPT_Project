@@ -1,0 +1,92 @@
+# Define the location of the log file
+$logFile = "C:\logs\application.log"
+
+# Read the log file into a variable
+$logData = Get-Content $logFile
+
+# Initialize variables to hold log statistics
+$errorCount = 0
+$warningCount = 0
+$infoCount = 0
+$debugCount = 0
+$uniqueErrorMessages = @{}
+$logPerDay = @{}
+$logPerIp = @{}
+$logPerUser = @{}
+$logPerExcep = @{}
+
+# Loop through each line of the log file
+foreach ($line in $logData) {
+    # Check if the line contains the word "ERROR"
+    if ($line -match "ERROR") {
+        # Increase the error count
+        $errorCount++
+        # Add the error message to the uniqueErrorMessages hashset
+        $uniqueErrorMessages[$line] = $true
+    }
+    # Check if the line contains the word "WARNING"
+    elseif ($line -match "WARNING") {
+        # Increase the warning count
+        $warningCount++
+    }
+    # Check if the line contains the word "INFO"
+    elseif ($line -match "INFO") {
+        # Increase the info count
+        $infoCount++
+    }
+    elseif ($line -match "DEBUG") {
+        # Increase the debug count
+        $debugCount++
+    }
+    # Extract the date from the log line and group the logs by day
+    if($line -match "(\d{4}-\d{2}-\d{2})")
+    {
+        $date = $matches[1]
+        if($logPerDay.ContainsKey($date)){
+            $logPerDay[$date]++
+        }
+        else{
+            $logPerDay[$date] = 1
+        }
+    }
+    # Extract the IP from the log line and group the logs by IP
+    if($line -match "(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})")
+    {
+        $ip = $matches[1]
+        if($logPerIp.ContainsKey($ip)){
+            $logPerIp[$ip]++
+        }
+        else{
+            $logPerIp[$ip] = 1
+        }
+    }
+    # Extract the user from the log line and group the logs by user
+    if($line -match "user=(\w+)")
+    {
+        $user = $matches[1]
+        if($logPerUser.ContainsKey($user)){
+            $logPerUser[$user]++
+        }
+        else{
+            $logPerUser[$user] = 1
+        }
+    }
+    # Extract the exception from the log line and group the logs by exception
+    if($line -match "exception=(\w+)")
+    {
+        $excep = $matches[1]
+        if($logPerExcep.ContainsKey($excep)){
+            $logPerExcep[$excep]
+    }
+}
+
+# Print the log statistics
+Write-Host "Error count: $errorCount"
+Write-Host "Warning count: $warningCount"
+Write-Host "Info count: $infoCount"
+Write-Host "Debug count: $debugCount"
+Write-Host "Unique error messages: $(($uniqueErrorMessages.Keys).Count)"
+Write-Host "Logs per day: $logPerDay"
+Write-Host "Logs per IP: $logPerIp"
+Write-Host "Logs per user: $logPerUser"
+Write-Host "Logs per exception: $logPerExcep"
