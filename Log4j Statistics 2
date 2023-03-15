@@ -1,0 +1,288 @@
+Add-Type -AssemblyName System.Windows.Forms
+function Show-Results($results) {
+    $resultForm = New-Object System.Windows.Forms.Form
+    $resultForm.Text = "Log File Analysis Results"
+    $resultForm.Width = 800
+    $resultForm.Height = 600
+    $resultForm.StartPosition = "CenterScreen"
+
+    # Display general information in a label
+    $infoLabel = New-Object System.Windows.Forms.Label
+    $infoLabel.Text = @"
+Start Date: $($results.StartDate)
+End Date: $($results.EndDate)
+Duration: $($results.Duration) seconds
+Total SQL Queries: $($results.TotalSqlQueries)
+Minimum Execution Time: $($results.MinExecutionTime) ms
+Maximum Execution Time: $($results.MaxExecutionTime) ms
+Average Execution Time: $($results.AverageExecutionTime) ms
+Total Errors: $($results.TotalErrors)
+Total Lines: $($results.TotalLines)
+"@
+    $infoLabel.AutoSize = $true
+    $infoLabel.Location = New-Object System.Drawing.Point(20, 20)
+    $resultForm.Controls.Add($infoLabel)
+
+    # Display error messages in a ListView
+    $listView = New-Object System.Windows.Forms.ListView
+    $listView.Width = $resultForm.ClientSize.Width - 40
+    $listView.Height = $resultForm.ClientSize.Height - ($infoLabel.Height + 60)
+    $listView.Location = New-Object System.Drawing.Point(20, ($infoLabel.Bottom + 20))
+
+    $listView.View = [System.Windows.Forms.View]::Details
+    $listView.FullRowSelect = $true
+    $listView.GridLines = $true
+    $listView.Columns.Add('Message') | Out-Null
+    $listView.Columns.Add('Count') | Out-Null
+
+    $errorMessagesTable = $results.ErrorMessages.GetEnumerator() | Sort-Object -Property Value |
+        Select-Object -Property @{Name='Message';Expression={$_.Name}}, @{Name='Count';Expression={$_.Value}}
+
+    foreach ($row in $errorMessagesTable) {
+        $listItem = New-Object System.Windows.Forms.ListViewItem($row.Message)
+        $listItem.SubItems.Add($row.Count)
+        $listView.Items.Add($listItem)
+    }
+
+    $listView.AutoResizeColumns([System.Windows.Forms.ColumnHeaderAutoResizeStyle]::ColumnContent)
+
+    $resultForm.Controls.Add($listView)
+
+    $resultForm.ShowDialog() | Out-Null
+}
+
+
+
+
+
+clear
+# Define function
+function Get-LogFileStats {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$LogFilePath
+    )
+    $elapsedTime = (Measure-Command {
+
+    # Set variables
+    $startTime = Get-Date
+    $elapsedTime2 = 0
+    $startDate = ""
+    $endDate = ""
+    $errorClasses = @{}
+    $errorMessages = @{}
+    $errorthreads = @{}
+    $errorprogram = @{}
+    $totalErrors = 0
+    $totalSqlQueries = 0
+    $totalLines = 0
+    $minExecutionTime = [double]::MaxValue
+    $maxExecutionTime = [double]::MinValue
+    $totalExecutionTime = 0
+    $bufferSize = 1024 * 1024 # 1 MB buffer
+
+    # Read log file
+    $fileStream = New-Object System.IO.FileStream($LogFilePath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite, $bufferSize)
+    $streamReader = New-Object System.IO.StreamReader($fileStream)
+    while (($line = $streamReader.ReadLine()) -ne $null) {
+    $totalLines++
+        if ($line -match '^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}).*') {
+            if (-not $startDate) {
+                $startDate = [DateTime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:ss,fff', $null)
+            }
+            $endDate = [DateTime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:ss,fff', $null)
+        }
+$regex = '^(?!.*\t)(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) \[(.+?)\] ERROR \[(.+?)\] (.+)$'
+
+if ($matches = [regex]::Matches($line, $regex)[0]) {
+$timestamp = $matches.Groups[1].Value
+$thread = $matches.Groups[2].Value
+$program = $matches.Groups[3].Value
+$logLevel = $matches.Groups[4].Value
+$class = $matches.Groups[3].Value
+$message = $matches.Groups[4].Value + " " + $matches.Groups[6].Value -replace '\(.*?\)', ''
+
+    if (-not [string]::IsNullOrEmpty($class) -and -not [string]::IsNullOrEmpty($message) -and $logLevel.StartsWith("com.tms.")) {
+        if (-not $errorClasses.ContainsKey($class)) {
+            $errorClasses[$class] = @{}
+        }
+        if (-not $errorClasses[$class].ContainsKey($message)) {
+            $errorClasses[$class][$message] = 0
+        }
+        $errorClasses[$class][$message]++
+        if (-not $errorMessages.ContainsKey($message)) {
+            $errorMessages[$message] = 0
+        }
+        $errorMessages[$message]++
+        $totalErrors++
+    }
+}
+
+# Count queries
+        if ($line -match 'select.*from') {
+            $totalSqlQueries++
+        }
+
+# Find total, min, and max execution times
+        if ($line -match 'Execution time:\s*(\d+)[mM:](\d+\.\d+)\s*') {
+            $minutes = [int]$Matches[1]
+            $seconds = [double]$Matches[2]
+            $milliseconds = ($minutes * 60 + $seconds) * 1000
+            $executionTime = New-Object TimeSpan -ArgumentList 0, 0, 0, 0, $milliseconds
+            if ($executionTime.TotalMilliseconds -lt $minExecutionTime) {
+                $minExecutionTime = $executionTime.TotalMilliseconds
+            }
+            if ($executionTime.TotalMilliseconds -gt $maxExecutionTime) {
+                $maxExecutionTime = $executionTime.TotalMilliseconds
+            }
+            $totalExecutionTime += $executionTime.TotalMilliseconds
+        }
+            $percentComplete = ($fileStream.Position / $fileStream.Length * 100)
+
+# Calculate the elapsed time
+if ($totalLines % 15000 -eq 0) {
+    $percentComplete = ($fileStream.Position / $fileStream.Length * 100)
+    $elapsedTime2 = New-TimeSpan -Start $startTime -End (Get-Date)
+    $estimatedRemainingTime = ($elapsedTime2.TotalSeconds / $percentComplete * 100) - $elapsedTime2.TotalSeconds
+    Write-Progress -Activity "Analyzing log file. This may take a while." -PercentComplete $percentComplete -SecondsRemaining ([int]$estimatedRemainingTime)
+}
+
+}
+
+$streamReader.Close()
+$fileStream.Close()
+}).TotalMilliseconds
+
+# Calculate average execution time
+if ($totalSqlQueries -gt 0) {
+    $averageExecutionTime = [Math]::Round($totalExecutionTime / $totalSqlQueries, 2)
+} else {
+    $averageExecutionTime = 0
+}
+# Calculate log timespan
+$duration = (Get-Date $endDate) - (Get-Date $startDate)
+$durationInSeconds = $duration.TotalSeconds
+
+# Create the results labels
+$errorTable = $errorClasses.GetEnumerator() | ForEach-Object {
+    $class = $_.Name
+    $_.Value.GetEnumerator() | ForEach-Object {
+        [PSCustomObject] @{
+            Class = $class
+            Message = $_.Key
+            Count = $_.Value
+        }
+    }
+    Write-Output $_.Value.GetEnumerator() | ForEach-Object {
+        [PSCustomObject] @{
+            Class = ''
+            Message = $_.Key
+            Count = $_.Value
+        }
+    }
+} | Sort-Object Class, Message
+
+
+$errorsLabel = "Number of errors by class:`n$($errorTable | Where-Object { $_.Class } | Group-Object -Property Class | Select-Object @{Name='Class';Expression={$_.Name}}, @{Name='Count';Expression={$_.Group | Measure-Object -Property Count -Sum | Select-Object -ExpandProperty Sum}} | Sort-Object -Property Count -Descending | Format-Table -AutoSize | Out-String)"
+$errorMessagesLabel = "Number of error messages:`n$($errorTable | Where-Object { -not $_.Class } | Sort-Object -Property Count -Descending | Format-Table -AutoSize | Out-String)"
+
+$labels = @{
+#"errorsLabel" = "Number of errors by class:`n$($errorClasses.GetEnumerator() | Sort-Object -Property Value | 
+#                                                Select-Object -Property @{Name='Class';Expression={$_.Name}}, @{Name='Message';Expression={$_.Value.Keys}}, @{Name='Count';Expression={$_.Value.Values}} |
+#                                                Format-Table -AutoSize | Out-String)";
+
+"errorMessagesLabel" = "Number of error messages:`n$($errorMessages.GetEnumerator() | Sort-Object -Property Value | 
+                                                Select-Object -Property @{Name='Message';Expression={$_.Name}}, @{Name='Count';Expression={$_.Value}} |
+                                                Format-Table -AutoSize | Out-String)";
+}
+
+    # Create an object to hold the results
+    $results = [PSCustomObject]@{
+        StartDate = $startDate
+        EndDate = $endDate
+        Duration = $durationInSeconds
+        TotalSqlQueries = $totalSqlQueries
+        MinExecutionTime = $minExecutionTime
+        MaxExecutionTime = $maxExecutionTime
+        AverageExecutionTime = $totalExecutionTime / $totalSqlQueries
+        TotalErrors = $totalErrors
+        ErrorMessages = $errorMessages
+        TotalLines = $totalLines
+    }
+
+    # Return the results
+    return $results
+}
+
+
+# Create a new form
+$form = New-Object System.Windows.Forms.Form
+$form.Text = "Select a log file"
+$form.Width = 400
+$form.Height = 200
+$form.StartPosition = "CenterScreen"
+
+# Create a label to display instructions
+$label = New-Object System.Windows.Forms.Label
+$label.Text = "Please select a log file"
+$label.AutoSize = $true
+$label.Location = New-Object System.Drawing.Point(10, 10)
+$form.Controls.Add($label)
+
+# Create a button to open a file dialog
+$button = New-Object System.Windows.Forms.Button
+$button.Text = "Select File"
+$button.Location = New-Object System.Drawing.Point(10, 40)
+$form.Controls.Add($button)
+
+# Create a button to process the log file
+$processButton = New-Object System.Windows.Forms.Button
+$processButton.Text = "Process Log"
+$processButton.Location = New-Object System.Drawing.Point(10, 80)
+$processButton.Enabled = $false
+$form.Controls.Add($processButton)
+
+# Create a button to cancel the form
+$cancelButton = New-Object System.Windows.Forms.Button
+$cancelButton.Text = "Cancel"
+$cancelButton.Location = New-Object System.Drawing.Point(90, 40)
+$form.Controls.Add($cancelButton)
+
+# When the "Select File" button is clicked, show a file dialog
+$button.Add_Click({
+    $dialog = New-Object System.Windows.Forms.OpenFileDialog
+    $dialog.Filter = "Log Files (*.log)|*.log|All Files (*.*)|*.*"
+    $result = $dialog.ShowDialog()
+    if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+        $global:logFilePath = $dialog.FileName
+        $processButton.Enabled = $true
+    }
+})
+
+# When the "Process Log" button is clicked, call the Get-LogFileStats function
+$processButton.Add_Click({
+    $results = Get-LogFileStats -LogFilePath $global:logFilePath
+    $cancelButton.Text = "Close"
+    Show-Results -results $results
+})
+
+# When the "Cancel" button is clicked, close the form
+$cancelButton.Add_Click({
+    $form.Close()
+})
+
+# When the form is closed, return the selected file path if it exists
+$form.Add_FormClosed({
+    if ($global:logFilePath) {
+        $form.Tag = $global:logFilePath
+    }
+})
+
+# Show the form and wait for the user to close it
+$form.ShowDialog() | Out-Null
+
+# If the user clicked "OK", store the log file path in the $logFilePath variable
+if ($form.Tag) {
+    $form.Tag
+}
