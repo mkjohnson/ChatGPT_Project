@@ -1,0 +1,209 @@
+Add-Type -AssemblyName System.Windows.Forms
+
+# Create a new form
+$form = New-Object System.Windows.Forms.Form
+$form.Text = "Performance Collector"
+$form.Size = New-Object System.Drawing.Size(325, 200)
+$form.StartPosition = "CenterScreen"
+
+# Frequency label
+$labelFrequency = New-Object System.Windows.Forms.Label
+$labelFrequency.Text = "Frequency (seconds):"
+$labelFrequency.AutoSize = $true
+$labelFrequency.Location = New-Object System.Drawing.Point(10, 20)
+$form.Controls.Add($labelFrequency)
+
+# Frequency input box
+$textBoxFrequency = New-Object System.Windows.Forms.TextBox
+$textBoxFrequency.Location = New-Object System.Drawing.Point(150, 20)
+$textBoxFrequency.Size = New-Object System.Drawing.Size(40, 20)
+$textBoxFrequency.Text = "300"
+$form.Controls.Add($textBoxFrequency)
+
+# Start Collection button
+$buttonStart = New-Object System.Windows.Forms.Button
+$buttonStart.Text = "Start Collection"
+$buttonStart.Location = New-Object System.Drawing.Point(10, 100)
+$buttonStart.Size = New-Object System.Drawing.Size(120, 30)
+
+# Add Browse button
+$buttonBrowse = New-Object System.Windows.Forms.Button
+$buttonBrowse.Text = "Browse"
+$buttonBrowse.Location = New-Object System.Drawing.Point(10, 60)
+$buttonBrowse.Size = New-Object System.Drawing.Size(120, 30)
+
+# Status label
+$labelStatus = New-Object System.Windows.Forms.Label
+$labelStatus.Text = "Status: Not started"
+$labelStatus.AutoSize = $true
+$labelStatus.Location = New-Object System.Drawing.Point(10, 140)
+$form.Controls.Add($labelStatus)
+
+$global:excelFilePath = "C:\Scripts\Get-WindowsPerfStats\Logs\stats.xlsx" # Default file path
+
+$buttonBrowse.Add_Click({
+    $saveFileDialog = New-Object System.Windows.Forms.SaveFileDialog
+    $saveFileDialog.Filter = "Excel files (*.xlsx)|*.xlsx|All files (*.*)|*.*"
+    $saveFileDialog.InitialDirectory = [System.IO.Path]::GetDirectoryName($global:excelFilePath)
+    $saveFileDialog.FileName = "stats.xlsx"
+    $saveFileDialog.Title = "Save performance data as"
+    
+    if ($saveFileDialog.ShowDialog() -eq "OK") {
+        $global:excelFilePath = $saveFileDialog.FileName
+    }
+})
+
+$form.Controls.Add($buttonBrowse)
+
+# Define click function on start button
+$buttonStart.Add_Click({
+    $frequency = [int]$textBoxFrequency.Text
+    $buttonCancel.Text = "Stop Collection"
+    $buttonStart.Enabled = $false
+    if (-not $global:job) {
+        $labelStatus.Text = "Status: Running"
+
+        # Get the hostname
+        $hostname = [System.Net.Dns]::GetHostName()
+
+        # Create a unique CSV file name when the "Start Collection" button is clicked
+$uniqueFileName = "{0}_{1}_{2:yyyyMMdd_HHmmss}.xlsx" -f $hostname, [System.IO.Path]::GetFileNameWithoutExtension($global:excelFilePath), (Get-Date)
+
+$uniqueFilePath = Join-Path ([System.IO.Path]::GetDirectoryName($global:excelFilePath)) $uniqueFileName
+
+        $scriptBlock = {
+            param($uniqueFilePath, $frequency)
+
+            function Get-WindowsPerfStats {
+
+    # CPU performance
+    $cpuCores = (Get-CimInstance -ClassName Win32_Processor).NumberOfLogicalProcessors
+    $cpuLoad = (Get-CimInstance -ClassName Win32_PerfFormattedData_PerfOS_Processor -Filter "Name = '_Total'").PercentProcessorTime
+    $cpuQueueLength = (Get-CimInstance -ClassName Win32_PerfFormattedData_PerfOS_System).ProcessorQueueLength
+    $interruptsPerSec = (Get-CimInstance -ClassName Win32_PerfFormattedData_Counters_ProcessorInformation | Measure-Object -Property InterruptsPersec -Average).Average
+
+    # Memory performance
+    $memory = Get-CimInstance -ClassName Win32_OperatingSystem
+    $memoryTotal = [math]::Round($memory.TotalVisibleMemorySize / 1MB, 2)
+    $memoryFree = [math]::Round($memory.FreePhysicalMemory / 1MB, 2)
+    $memoryUsed = $memoryTotal - $memoryFree
+    $memoryLoad = [math]::Round(($memoryUsed / $memoryTotal) * 100, 2)
+    $memoryPerf = Get-CimInstance -ClassName Win32_PerfFormattedData_PerfOS_Memory
+    $pagesPerSec = $memoryPerf.PagesPersec
+    $pageFaultsPerSec = $memoryPerf.PageFaultsPersec
+    $availableMBytes = $memoryPerf.AvailableMBytes
+
+    # Disk performance
+    $disks = Get-CimInstance -ClassName Win32_PerfFormattedData_PerfDisk_PhysicalDisk | Where-Object { $_.Name -ne "_Total" }
+
+    # Network performance
+    $networkAdapters = Get-CimInstance -ClassName Win32_PerfFormattedData_Tcpip_NetworkInterface
+
+    # System performance
+    $systemPerf = Get-CimInstance -ClassName Win32_PerfFormattedData_PerfOS_System
+    $systemUpTime = $systemPerf.SystemUpTime
+    $contextSwitchesPerSec = $systemPerf.ContextSwitchesPersec
+
+    # SQL Server performance
+    $sqlServerPerf = Get-CimInstance -ClassName Win32_PerfFormattedData_MSSQLSERVER_SQLServerGeneralStatistics
+    $batchRequestsPerSec = $sqlServerPerf.BatchRequestsPersec
+    $userConnections = $sqlServerPerf.UserConnections
+    $sqlServerBufferManager = Get-CimInstance -ClassName Win32_PerfFormattedData_MSSQLSERVER_SQLServerBufferManager
+    $bufferCacheHitRatio = $sqlServerBufferManager.Buffercachehitratio
+    $bufferCacheHitRatioBase = $sqlServerBufferManager.Buffercachehitratio_Base
+
+    # Output performance data
+    $performanceData = [PSCustomObject]@{
+        Timestamp = Get-Date
+        CPUCores = $cpuCores
+        CPULoad = $cpuLoad
+        CPUQueueLength = $cpuQueueLength
+        InterruptsPerSec = $interruptsPerSec
+        MemoryTotal = $memoryTotal
+        MemoryFree = $memoryFree
+        MemoryUsed = $memoryUsed
+        MemoryLoad = $memoryLoad
+        PagesPerSec = $pagesPerSec
+        PageFaultsPerSec = $pageFaultsPerSec
+        AvailableMBytes = $availableMBytes
+        SystemUpTime = $systemUpTime
+        ContextSwitchesPerSec = $contextSwitchesPerSec
+        BatchRequestsPerSec = $batchRequestsPerSec
+        UserConnections = $userConnections
+        BufferCacheHitRatio = $bufferCacheHitRatio
+        BufferCacheHitRatioBase = $bufferCacheHitRatioBase
+    }
+
+    # Add disk performance data to the performance data object
+    $diskIndex = 0
+    $disks | ForEach-Object {
+        $disk = $_
+        $diskIndex++
+        $performanceData | Add-Member -NotePropertyName "Disk${diskIndex}_Name" -NotePropertyValue $disk.Name
+        $performanceData | Add-Member -NotePropertyName "Disk${diskIndex}_ReadBytesPerSec" -NotePropertyValue $disk.DiskReadBytesPerSec
+        $performanceData | Add-Member -NotePropertyName "Disk${diskIndex}_WriteBytesPerSec" -NotePropertyValue $disk.DiskWriteBytesPerSec
+        $performanceData | Add-Member -NotePropertyName "Disk${diskIndex}_DiskQueueLength" -NotePropertyValue $disk.AvgDiskQueueLength
+        $performanceData | Add-Member -NotePropertyName "Disk${diskIndex}_PercentDiskTime" -NotePropertyValue $disk.PercentDiskTime
+        $performanceData | Add-Member -NotePropertyName "Disk${diskIndex}_CurrentDiskQueueLength" -NotePropertyValue $disk.CurrentDiskQueueLength
+        $performanceData | Add-Member -NotePropertyName "Disk${diskIndex}_SplitIOPerSec" -NotePropertyValue $disk.SplitIOPerSec
+    }
+
+    # Add network performance data to the performance data object
+    $adapterIndex = 0
+    $networkAdapters | ForEach-Object {
+        $adapter = $_
+        $adapterIndex++
+        $performanceData | Add-Member -NotePropertyName "Adapter${adapterIndex}_Name" -NotePropertyValue $adapter.Name
+        $performanceData | Add-Member -NotePropertyName "Adapter${adapterIndex}_BytesReceivedPerSec" -NotePropertyValue $adapter.BytesReceivedPerSec
+        $performanceData | Add-Member -NotePropertyName "Adapter${adapterIndex}_BytesSentPerSec" -NotePropertyValue $adapter.BytesSentPerSec
+        $performanceData | Add-Member -NotePropertyName "Adapter${adapterIndex}_PacketsReceivedPerSec" -NotePropertyValue $adapter.PacketsReceivedPerSec
+        $performanceData | Add-Member -NotePropertyName "Adapter${adapterIndex}_PacketsSentPerSec" -NotePropertyValue $adapter.PacketsSentPerSec
+        $performanceData | Add-Member -NotePropertyName "Adapter${adapterIndex}_OutputQueueLength" -NotePropertyValue $adapter.OutputQueueLength
+        $performanceData | Add-Member -NotePropertyName "Adapter${adapterIndex}_NetworkUtilization" -NotePropertyValue $networkUtilization
+        $performanceData | Add-Member -NotePropertyName "Adapter${adapterIndex}_TcpConnectionsEstablished" -NotePropertyValue (Get-CimInstance -ClassName Win32_PerfFormattedData_Tcpip_TCPv4).ConnectionsEstablished
+    }
+
+    # Return the performance data object
+    $performanceData
+
+}
+
+            function Log-PerformanceData {
+    $performanceData = Get-WindowsPerfStats
+    $performanceData | Export-Excel -Path $uniqueFilePath -Append
+}
+
+            while ($true) {
+                Log-PerformanceData
+                Start-Sleep -Seconds $frequency
+            }
+        }
+
+$global:job = Start-Job -Name "WindowsPerfStats" -ScriptBlock $scriptBlock -ArgumentList $uniqueFilePath, $frequency
+    }
+})
+
+$form.Controls.Add($buttonStart)
+
+# Cancel button
+$buttonCancel = New-Object System.Windows.Forms.Button
+$buttonCancel.Text = "Close"
+$buttonCancel.Location = New-Object System.Drawing.Point(140, 100)
+$buttonCancel.Size = New-Object System.Drawing.Size(120, 30)
+
+$buttonCancel.Add_Click({
+    if ($global:job) {
+        Stop-Job -Name "WindowsPerfStats"
+        Remove-Job -Name "WindowsPerfStats"
+        $global:job = $null
+        $buttonCancel.Text = "Close"
+        $labelStatus.Text = "Status: Stopped"
+    } elseif(-not $global:job) {
+        $form.Close()
+        }
+})
+
+$form.Controls.Add($buttonCancel)
+
+# Show the form
+[void]$form.ShowDialog()
